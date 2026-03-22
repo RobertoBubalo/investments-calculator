@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch, onMounted } from 'vue'
 import type { ProjectionSettings } from '@/types'
 
 const emit = defineEmits<{
@@ -11,6 +11,32 @@ const inflationDisplay = ref('2.5')
 const cgtDisplay = ref('')
 const incomeTaxDisplay = ref('')
 const deemedDisposalDisplay = ref('41')
+
+const SETTINGS_KEY = 'was-projection-settings'
+
+onMounted(() => {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY)
+    if (raw) {
+      const s = JSON.parse(raw)
+      if (s.years)             years.value               = s.years
+      if (s.inflation)         inflationDisplay.value     = s.inflation
+      if (s.cgt != null)       cgtDisplay.value           = s.cgt
+      if (s.incomeTax != null) incomeTaxDisplay.value     = s.incomeTax
+      if (s.deemedDisposal)    deemedDisposalDisplay.value = s.deemedDisposal
+    }
+  } catch { /* ignore corrupted data */ }
+})
+
+watch([years, inflationDisplay, cgtDisplay, incomeTaxDisplay, deemedDisposalDisplay], () => {
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+    years: years.value,
+    inflation: inflationDisplay.value,
+    cgt: cgtDisplay.value,
+    incomeTax: incomeTaxDisplay.value,
+    deemedDisposal: deemedDisposalDisplay.value,
+  }))
+})
 
 function onRun() {
   emit('run-projection', {

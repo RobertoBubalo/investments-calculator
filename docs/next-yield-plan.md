@@ -34,18 +34,22 @@ Asset
 ├── BuyPrice (decimal)
 ├── CurrentSharePrice (decimal)
 ├── CurrentValue (computed: Shares × CurrentSharePrice)
-├── CgtTaxRate (decimal?, nullable)
+├── CgtTaxRate (decimal?, nullable)            — per-asset rate; null = use global fallback
 ├── WithholdingTaxRate (decimal?, nullable)
 ├── PriceAppreciationPct (decimal?, nullable)  — annual %
 ├── DividendYield (decimal)                    — current annual yield %
 ├── DividendGrowthPct (decimal?, nullable)     — annual %
-├── AnnualContribution (decimal?, default 0)   — recurring investment
+├── DeemedDisposalEnabled (bool)               — Irish 8-year exit tax rule
+├── DripEnabled (bool)                         — reinvest dividends as shares (true) or accumulate as cash (false)
+├── AnnualContribution (decimal, default 0)    — recurring investment
 └── CreatedAt / UpdatedAt
 
-ProjectionSettings (per portfolio or per request)
+ProjectionSettings (per request)
 ├── Years (int)
 ├── InflationRate (decimal)
-└── AnnualContribution (decimal)
+├── CgtTaxRate (decimal?, optional)            — global fallback CGT rate for assets with null per-asset rate
+├── DividendIncomeTaxRate (decimal?, optional) — personal income tax on net dividends
+└── DeemedDisposalTaxRate (decimal?, optional) — exit tax rate, defaults to 0.41
 ```
 
 `CurrentValue` can be a computed column or a getter in the entity — no need to store it.
@@ -58,33 +62,48 @@ All projection logic lives in a dedicated **service** (`ProjectionService`) so i
 
 ### Per-year loop (for year `y`, starting from year 0):
 
+Each asset maintains an array of **ShareLots** (initial holding + annual contribution lots + DRIP lots). This is the core of the engine.
+
 ```
-For each asset:
-  sharePrice[y]    = sharePrice[y-1] × (1 + priceAppreciationPct)
-  shares[y]        = shares[y-1] + (annualContribution / sharePrice[y])
-  portfolioValue[y]= shares[y] × sharePrice[y]
-  grossDividend[y] = shares[y] × sharePrice[y] × dividendYield[y]
-  dividendYield[y] = dividendYield[y-1] × (1 + dividendGrowthPct)
-  whTax[y]         = grossDividend[y] × withholdingTaxRate
-  netDividend[y]   = grossDividend[y] - whTax[y]
-  capitalGain[y]   = (sharePrice[y] - buyPrice) × shares[y]
-  cgtTax[y]        = capitalGain[y] × cgtTaxRate  (unrealised, for reference)
+cashBalance = 0  // persists across years for non-DRIP assets
+deemedDisposalRate = settings.deemedDisposalTaxRate ?? 0.41
+
+For each asset (each year):
+  a) sharePrice[y] = sharePrice[y-1] × (1 + priceAppreciationPct)
+  b) if annualContribution > 0: push new lot { shares: contribution / sharePrice[y], costBase: sharePrice[y], purchaseYear: y }
+  c) Deemed disposal: for each lot where (y - lot.purchaseYear) % 8 === 0 && yearsHeld > 0:
+       gain = (sharePrice[y] - lot.costBase) × lot.shares
+       if gain > 0: tax = gain × deemedDisposalRate; sell shares to cover; reset costBase
+       else: reset costBase (no tax)
+  d) dividendYield[y] = dividendYield[y-1] × (1 + dividendGrowthPct)
+     grossDividend = totalSharesBeforeDrip × sharePrice[y] × dividendYield[y]
+     whTax = grossDividend × withholdingTaxRate
+     netDividend = grossDividend - whTax
+     incomeTax = netDividend × dividendIncomeTaxRate
+     takeHome = netDividend - incomeTax
+  e) if dripEnabled && takeHome > 0: push new lot { shares: takeHome / sharePrice[y], costBase: sharePrice[y], purchaseYear: y }
+     else: cashBalance += takeHome
+  f) CGT (unrealised, informational): effectiveCgtRate = asset.cgtTaxRate ?? settings.cgtTaxRate ?? 0
+     unrealisedCgt = Σ (sharePrice[y] - lot.costBase) × lot.shares × effectiveCgtRate  (for lots with gain > 0)
+  g) portfolioValue = totalShares × sharePrice[y]  (all lots including DRIP)
 
 Aggregate across all assets per year:
-  totalWealth[y]         = Σ portfolioValue[y]
-  totalDividends[y]      = Σ netDividend[y]
-  totalTaxPaid[y]        = Σ (whTax[y] + cgtTax[y])
-  accumWealth[y]         = totalWealth[y]  (already cumulative by nature)
+  portfolioWealth[y]     = Σ portfolioValue
+  totalWealth[y]         = portfolioWealth[y] + cashBalance        ← cashBalance persists!
+  totalDividends[y]      = Σ netDividend (after WHT, before income tax)
+  totalTaxPaid[y]        = Σ (whTax + deemedTax + incomeTax)      ← CGT excluded!
+  totalUnrealisedCgt[y]  = Σ unrealisedCgt                        ← informational only
   accumDividends[y]      = accumDividends[y-1] + totalDividends[y]
-  accumTaxPaid[y]        = accumTaxPaid[y-1] + totalTaxPaid[y]
+  accumTaxPaid[y]        = accumTaxPaid[y-1] + totalTaxPaid[y]    ← excludes CGT
 
 Inflation-adjusted (real) values:
   realValue[y] = nominalValue[y] / (1 + inflationRate)^y
 ```
 
-### Reinvestment / additional contribution handling:
-
-The `annualContribution` field on each asset (or a global one in `ProjectionSettings`) gets converted to additional shares each year at that year's share price, compounding into subsequent years.
+**Key design decisions:**
+- CGT is informational (unrealised) — never included in `taxPaid` or `accumTaxPaid`
+- Cash dividends (`dripEnabled: false`) accumulate in a running `cashBalance` added to `totalWealth`
+- Each DRIP lot and contribution lot has its own independent 8-year deemed disposal cycle
 
 ---
 
@@ -137,17 +156,25 @@ POST   /api/portfolios/{id}/projections
 
 ## Phased Delivery
 
-### Phase 1 – POC (1–2 days)
+### Phase 1 – POC ✅ COMPLETE
 **Goal:** Prove the projection math works end-to-end in a single page.
 
-- Hardcoded asset data (no backend, no auth)
-- Vue 3 + Vuetify single-page app
-- Manual asset entry form → local state (no persistence)
-- `ProjectionService` logic implemented in TypeScript on the frontend
-- Render projection table + a basic Chart.js line chart
-- Validate the math against a spreadsheet
+**Delivered:**
+- Vue 3 + Vuetify frontend-only app (no backend, no auth)
+- Per-asset form with all fields including DRIP toggle and deemed disposal toggle
+- Full projection engine in TypeScript: ShareLot model, deemed disposal per lot, DRIP/cash accumulation, configurable tax rates
+- Projection table with expandable deemed disposal events, CGT liability column, dividend income tax column
+- Chart.js projection chart (4 lines: nominal wealth, real wealth, dividends, tax paid)
+- 14 unit tests (Vitest) covering all engine features
+- Deployed to GitHub Pages: https://robertobubalo.github.io/investments-calculator/
 
-**Deliverable:** A working calculator you can demo with fake data.
+**Key features implemented:**
+- Irish 8-year deemed disposal (per lot, cost base reset, configurable rate, default 41%)
+- Annual contributions → independent lots with own disposal cycles
+- DRIP: take-home dividend → new ShareLot OR cash accumulation in totalWealth
+- Global CGT fallback rate + per-asset override; CGT is informational (unrealisedCgt), excluded from taxPaid
+- Dividend income tax (personal income tax on net dividends)
+- Inflation adjustment (realWealth)
 
 ### Phase 2 – Architecture Talks (1 day)
 **Goal:** Agree on final data model, API contract, and infra decisions.

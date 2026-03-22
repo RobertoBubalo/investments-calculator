@@ -74,7 +74,9 @@ cd src/web && npm run test
 
 **Projection engine** — Runs a year-by-year simulation across all assets factoring in price appreciation, dividend growth, withholding tax, CGT (unrealised), annual contributions, and dividend reinvestment. Each of these generates independent share lots that compound correctly.
 
-**Irish deemed disposal** — Optional per-asset toggle. Applies 41% exit tax on unrealised gains every 8 years from each lot's purchase date. Each annual contribution and reinvested dividend creates an independent lot with its own 8-year cycle. Cost base resets after each trigger. Disposal years are expandable in the projection table to show a per-lot breakdown (asset, lot purchase year, unrealised gain, tax paid, shares sold).
+**Irish deemed disposal** — Optional per-asset toggle. Applies exit tax (default 41%, configurable) on unrealised gains every 8 years from each lot's purchase date. Each annual contribution and DRIP lot creates an independent lot with its own 8-year cycle. Cost base resets after each trigger. Disposal years are expandable in the projection table to show a per-lot breakdown (asset, lot purchase year, unrealised gain, tax paid, shares sold).
+
+**Tax modelling** — CGT rate (per-asset or global fallback), withholding tax, and personal dividend income tax. CGT is tracked as an informational "unrealised liability" and is never mixed into actual cash taxes paid. Actual taxPaid = WHT + deemed disposal + dividend income tax only.
 
 **Inflation adjustment** — Inject a custom inflation rate to see all projections in today's money. Toggle between nominal and real values in both the table and chart.
 
@@ -123,4 +125,6 @@ All endpoints (except auth) require an authenticated session. All percentage/rat
 
 ## Deployment
 
-Production targets Azure: App Service (API), Static Web Apps (frontend), Database for PostgreSQL Flexible Server. CI/CD via GitHub Actions — CI runs on all PRs, deployment triggers on merge to `main`. See the Phase 4 plan for full Azure setup instructions.
+**Current (frontend POC):** The Phase 1 frontend-only POC is live at [https://robertobubalo.github.io/investments-calculator/](https://robertobubalo.github.io/investments-calculator/) — deployed automatically via GitHub Actions on push to `main`.
+
+**Planned (full stack):** Production targets Azure: App Service (API), Static Web Apps (frontend), Database for PostgreSQL Flexible Server. CI/CD via GitHub Actions — CI runs on all PRs, deployment triggers on merge to `main`. See the Phase 4 plan for full Azure setup instructions.

@@ -55,15 +55,19 @@ interface Asset {
   dividendYield: number              // annual %, e.g. 0.03 = 3%
   priceAppreciationPct: number | null
   dividendGrowthPct: number | null
-  cgtTaxRate: number | null
+  cgtTaxRate: number | null          // per-asset CGT rate; null = use global settings fallback
   withholdingTaxRate: number | null
   deemedDisposalEnabled: boolean
+  dripEnabled: boolean               // true = reinvest dividends as shares; false = accumulate as cash
   annualContribution: number         // € per year
 }
 
 interface ProjectionSettings {
   years: number
   inflationRate: number              // e.g. 0.025 = 2.5%
+  cgtTaxRate?: number                // global fallback CGT rate applied when per-asset rate is null
+  dividendIncomeTaxRate?: number     // personal income tax on net dividends, e.g. 0.40
+  deemedDisposalTaxRate?: number     // exit tax rate, defaults to 0.41
 }
 
 interface ShareLot {
@@ -83,11 +87,13 @@ interface DeemedDisposalEvent {
 
 interface YearRow {
   year: number
-  totalWealth: number
+  totalWealth: number                // portfolioWealth (all lots × price) + cashBalance
   wealthDelta: number
-  dividends: number
+  dividends: number                  // net dividends after withholding tax
   dividendsDelta: number
-  taxPaid: number
+  taxPaid: number                    // actual cash: WHT + deemed disposal + dividend income tax (CGT excluded)
+  unrealisedCgt: number              // paper CGT liability if sold today — informational only, not in taxPaid
+  dividendIncomeTax: number          // income tax on dividends (subset of taxPaid)
   deemedDisposalTax: number
   deemedDisposalEvents: DeemedDisposalEvent[]
   accumWealth: number
@@ -129,16 +135,28 @@ function runProjection(assets: Asset[], settings: ProjectionSettings): YearRow[]
 
 8. **Portfolio value.** `totalShares × sharePrice[y]`.
 
+**Per-asset steps (in order):**
+1. Price appreciation
+2. Annual contribution → new lot
+3. Deemed disposal (rate = `settings.deemedDisposalTaxRate ?? 0.41`; cost base reset after each trigger)
+4. Dividends on shares before any DRIP lot: gross → WHT → net → income tax → takeHome
+5. DRIP: if `dripEnabled && takeHome > 0` → push new lot; else `cashBalance += takeHome` (persists across years)
+6. CGT informational: `effectiveCgtRate = asset.cgtTaxRate ?? (settings.cgtTaxRate ?? 0)`; sum lotGain × rate across all lots
+7. Portfolio value = totalShares × sharePrice
+
 **Aggregation across all assets per year:**
-- `totalWealth` = Σ portfolio values
-- `dividends` = Σ net dividends
-- `taxPaid` = Σ (withholding tax + cgt + deemed disposal tax)
+- `portfolioWealth` = Σ portfolio values
+- `totalWealth` = `portfolioWealth + cashBalance` (cashBalance persists and grows across years)
+- `dividends` = Σ net dividends (after WHT, before income tax)
+- `taxPaid` = Σ (whTax + deemedTax + incomeTax) — **CGT excluded** (informational only)
+- `unrealisedCgt` = Σ cgtTax — paper liability, never included in taxPaid or accumTaxPaid
+- `dividendIncomeTax` = Σ assetIncomeTax
 - `deemedDisposalTax` = Σ deemed disposal taxes only
 - `wealthDelta` = `totalWealth[y] - totalWealth[y-1]`
 - `dividendsDelta` = `dividends[y] - dividends[y-1]`
 - `accumWealth` = `totalWealth[y]` (inherently cumulative)
 - `accumDividends` = `accumDividends[y-1] + dividends[y]`
-- `accumTaxPaid` = `accumTaxPaid[y-1] + taxPaid[y]`
+- `accumTaxPaid` = `accumTaxPaid[y-1] + taxPaid[y]` (excludes CGT)
 - `realWealth` = `totalWealth[y] / (1 + inflationRate)^y`
 - `realAccumDividends` = `accumDividends[y] / (1 + inflationRate)^y`
 
@@ -181,9 +199,9 @@ X-axis: Year. Y-axis: €. Include a legend and tooltip.
 
 ### 1.8 – Validation & testing
 - Prepare a known test case (e.g. 1 asset, €10,000, 5% growth, 3% yield, 1% dividend growth, 20% withholding, deemed disposal on, €1,200/yr contribution, 2.5% inflation, 20 years) and verify against a manual spreadsheet.
-- Write at least 3 unit tests for `runProjection` covering: basic growth, deemed disposal triggering at year 8/16, and annual contribution lot creation.
+- 14 unit tests (Vitest) covering all engine features: basic growth, deemed disposal, annual contributions, inflation, DRIP, cash accumulation, CGT, dividend income tax, configurable deemed disposal rate, edge cases.
 
-**Phase 1 deliverable:** A single-page app where you can add assets, tweak projection settings, and see a full table + chart of results. All in-memory, no backend.
+**Phase 1 deliverable:** ✅ COMPLETE — A single-page app deployed to GitHub Pages at https://robertobubalo.github.io/investments-calculator/. All-in-memory, no backend. Full projection engine with all tax features, DRIP/cash model, 14 passing tests.
 
 ---
 
@@ -229,6 +247,7 @@ public class Asset
     public decimal? CgtTaxRate { get; set; }
     public decimal? WithholdingTaxRate { get; set; }
     public bool DeemedDisposalEnabled { get; set; }
+    public bool DripEnabled { get; set; }   // true = reinvest dividends as shares; false = accumulate as cash
     public decimal AnnualContribution { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }

@@ -76,15 +76,19 @@ export interface Asset {
   dividendYield: number              // as decimal, e.g. 0.03 = 3%
   priceAppreciationPct: number | null
   dividendGrowthPct: number | null
-  cgtTaxRate: number | null
+  cgtTaxRate: number | null          // per-asset CGT rate; null = use global fallback
   withholdingTaxRate: number | null
   deemedDisposalEnabled: boolean
+  dripEnabled: boolean               // true = reinvest dividends as shares; false = accumulate as cash
   annualContribution: number
 }
 
 export interface ProjectionSettings {
   years: number
   inflationRate: number              // as decimal, e.g. 0.025 = 2.5%
+  cgtTaxRate?: number                // global fallback CGT rate, e.g. 0.33
+  dividendIncomeTaxRate?: number     // personal income tax on dividends, e.g. 0.40
+  deemedDisposalTaxRate?: number     // exit tax rate on deemed disposal gains, defaults to 0.41
 }
 
 export interface ShareLot {
@@ -111,11 +115,13 @@ export interface DeemedDisposalEvent {
 
 export interface YearRow {
   year: number
-  totalWealth: number
+  totalWealth: number                // portfolioWealth + cashBalance
   wealthDelta: number
-  dividends: number
+  dividends: number                  // net dividends after withholding tax
   dividendsDelta: number
-  taxPaid: number
+  taxPaid: number                    // actual cash taxes: WHT + deemed disposal + dividend income tax
+  unrealisedCgt: number              // paper CGT liability if sold today (informational, not in taxPaid)
+  dividendIncomeTax: number          // income tax on dividends (subset of taxPaid)
   deemedDisposalTax: number
   deemedDisposalEvents: DeemedDisposalEvent[]
   accumWealth: number
@@ -171,8 +177,9 @@ export interface YearRow {
      simState.lots.push({ shares: newShares, costBase: simState.sharePrice, purchaseYear: y })
    ```
 
-   **c) Deemed disposal:**
+   **c) Deemed disposal (rate is configurable, default 0.41):**
    ```
+   deemedDisposalRate = settings.deemedDisposalTaxRate ?? 0.41
    assetDeemedTax = 0
    if asset.deemedDisposalEnabled:
      for each lot in simState.lots:
@@ -180,45 +187,66 @@ export interface YearRow {
        if yearsHeld > 0 && yearsHeld % 8 === 0:
          gain = (simState.sharePrice - lot.costBase) * lot.shares
          if gain > 0:
-           tax = gain * 0.41
+           tax = gain * deemedDisposalRate
            sharesToSell = tax / simState.sharePrice
            lot.shares -= sharesToSell
-           lot.costBase = simState.sharePrice
+           lot.costBase = simState.sharePrice  // cost base reset for next 8-year cycle
            assetDeemedTax += tax
            deemedDisposalEvents.push({ assetName, assetSymbol, lotPurchaseYear: lot.purchaseYear, gain, taxAmount: tax, sharesReduced: sharesToSell })
+         else:
+           lot.costBase = simState.sharePrice  // reset even with no gain
    ```
 
-   **d) Compute totals for this asset:**
+   **d) Dividends (calculated on shares BEFORE any DRIP lot is added):**
    ```
-   totalShares = sum of lot.shares across all lots
-   portfolioValue = totalShares * simState.sharePrice
-
-   // Dividend growth
+   totalSharesForDiv = sum of lot.shares across all lots
    simState.dividendYield *= (1 + (asset.dividendGrowthPct ?? 0))
-   grossDividend = totalShares * simState.sharePrice * simState.dividendYield
+   grossDividend = totalSharesForDiv * simState.sharePrice * simState.dividendYield
    whTax = grossDividend * (asset.withholdingTaxRate ?? 0)
    netDividend = grossDividend - whTax
+   assetIncomeTax = netDividend * (settings.dividendIncomeTaxRate ?? 0)
+   takeHome = netDividend - assetIncomeTax
+   ```
 
-   // CGT (unrealised, informational)
+   **e) DRIP or cash accumulation:**
+   ```
+   if asset.dripEnabled && takeHome > 0:
+     simState.lots.push({ shares: takeHome / simState.sharePrice, costBase: simState.sharePrice, purchaseYear: y })
+   else:
+     cashBalance += takeHome   // running total, persists across years
+   ```
+
+   **f) CGT (unrealised, informational — uses ALL lots including any DRIP lot just added):**
+   ```
+   effectiveCgtRate = asset.cgtTaxRate ?? (settings.cgtTaxRate ?? 0)
    cgtTax = 0
    for each lot:
      lotGain = (simState.sharePrice - lot.costBase) * lot.shares
      if lotGain > 0:
-       cgtTax += lotGain * (asset.cgtTaxRate ?? 0)
+       cgtTax += lotGain * effectiveCgtRate
+   ```
+
+   **g) Portfolio value (uses ALL lots including DRIP):**
+   ```
+   totalShares = sum of lot.shares across all lots
+   portfolioValue = totalShares * simState.sharePrice
    ```
 
 5. **Aggregate across all assets for year y:**
    ```
-   totalWealth    = Σ portfolioValue
-   dividends      = Σ netDividend
-   taxPaid        = Σ (whTax + cgtTax + assetDeemedTax)
+   portfolioWealth = Σ portfolioValue
+   totalWealth     = portfolioWealth + cashBalance   // cashBalance persists across years
+   dividends       = Σ netDividend
+   taxPaid         = Σ (whTax + assetDeemedTax + assetIncomeTax)  // CGT excluded — informational only
+   unrealisedCgt   = Σ cgtTax                        // paper liability, not in taxPaid
+   dividendIncomeTax = Σ assetIncomeTax
    deemedDisposalTax = Σ assetDeemedTax
-   wealthDelta    = totalWealth - prevTotalWealth
-   dividendsDelta = dividends - prevDividends
-   accumWealth    = totalWealth
-   accumDividends = prevAccumDividends + dividends
-   accumTaxPaid   = prevAccumTaxPaid + taxPaid
-   realWealth     = totalWealth / Math.pow(1 + settings.inflationRate, y)
+   wealthDelta     = totalWealth - prevTotalWealth
+   dividendsDelta  = dividends - prevDividends
+   accumWealth     = totalWealth
+   accumDividends  = prevAccumDividends + dividends
+   accumTaxPaid    = prevAccumTaxPaid + taxPaid
+   realWealth      = totalWealth / Math.pow(1 + settings.inflationRate, y)
    realAccumDividends = accumDividends / Math.pow(1 + settings.inflationRate, y)
    ```
 
@@ -346,10 +374,11 @@ export const useAssetStore = defineStore('assets', () => {
    **Optional fields** (in a collapsible `v-expansion-panel` labelled "Advanced"):
    - Price Appreciation % per year (`v-text-field`, type number, suffix "%")
    - Dividend Growth % per year (`v-text-field`, type number, suffix "%")
-   - CGT Tax Rate % (`v-text-field`, type number, suffix "%")
+   - CGT Tax Rate % (`v-text-field`, type number, suffix "%") — per-asset override; leave blank to use global rate
    - Withholding Tax Rate % (`v-text-field`, type number, suffix "%")
-   - Deemed Disposal (`v-switch`, label "Enable Irish 8-year deemed disposal rule")
    - Annual Contribution (`v-text-field`, type number, min 0, prefix "€")
+   - Deemed Disposal (`v-switch`, label "Enable Irish 8-year deemed disposal rule")
+   - Reinvest Dividends DRIP (`v-switch`, label "Reinvest dividends (DRIP)") — when off, dividends accumulate as cash
 
 5. **Important:** The form accepts percentage inputs as human-readable numbers (e.g. user types `3` for 3%). Convert to decimal on save (`3` → `0.03`) and back to display values on edit (`0.03` → `3`).
 
@@ -389,9 +418,12 @@ export const useAssetStore = defineStore('assets', () => {
 3. Layout as a `v-card` with `title="Projection Settings"`:
    - Years: `v-slider` with min=1, max=50, step=1, default=20, thumb-label, appended text showing value
    - Inflation Rate: `v-text-field` type number, suffix "%", default=2.5, min=0, max=30
+   - CGT Rate: `v-text-field` type number, suffix "%", optional — global fallback rate applied to assets with no per-asset CGT rate set
+   - Dividend Income Tax Rate: `v-text-field` type number, suffix "%", optional — personal income tax applied to net dividends
+   - Deemed Disposal Tax Rate: `v-text-field` type number, suffix "%", default=41 — the Irish exit tax rate (editable for future-proofing)
    - "Run Projection" `v-btn` (colour primary, block)
 
-4. On button click, convert inflation from display percentage to decimal and emit the `run-projection` event.
+4. On button click, convert all display percentages to decimals and emit the `run-projection` event with `ProjectionSettings`.
 
 **Acceptance criteria:**
 - Slider and input are reactive
@@ -421,7 +453,9 @@ export const useAssetStore = defineStore('assets', () => {
    | Δ Wealth | `wealthDelta` | € delta (green/red) |
    | Dividends | `dividends` | € currency |
    | Δ Dividends | `dividendsDelta` | € delta (green/red) |
-   | Tax Paid | `taxPaid` | € currency |
+   | Tax Paid | `taxPaid` | € currency (WHT + deemed disposal + income tax; CGT excluded) |
+   | CGT Liability | `unrealisedCgt` | € currency (informational; shown in muted style) |
+   | Div. Income Tax | `dividendIncomeTax` | € currency (show "—" if 0) |
    | Deemed Disposal Tax | `deemedDisposalTax` | € currency (show "—" if 0) |
    | Accum. Wealth | `accumWealth` | € currency |
    | Accum. Dividends | `accumDividends` | € currency |
@@ -631,9 +665,9 @@ export const useAssetStore = defineStore('assets', () => {
    - Assert: returns empty array
 
    **Test 7 – Edge case: null optional fields:**
-   - 1 asset with all optional fields as null, deemed disposal off
+   - 1 asset with all optional fields as null, deemed disposal off, dripEnabled: false
    - 5 years
-   - Assert: no errors, price stays flat, dividends based on initial yield only
+   - Assert: no errors, price flat, dividends (200/yr) accumulate in cash → `totalWealth ≈ 10000 + year × 200`
 
    **Test 8 – Deemed disposal with no gain produces no tax:**
    - 1 asset, 100 shares @ €100, 0% appreciation, deemed disposal enabled
@@ -647,9 +681,43 @@ export const useAssetStore = defineStore('assets', () => {
    - Assert: year 8 has exactly 1 event with `lotPurchaseYear === 0`, `gain > 0`, `taxAmount ≈ gain × 0.41`, `sharesReduced > 0`
    - Assert: year 9 has exactly 1 event with `lotPurchaseYear === 1` (year-1 contribution lot)
 
+   **Test 10 – Dividend income tax reduces net take-home:**
+   - 1 asset, 100 shares @ €100, 4% dividend yield, no WHT
+   - `ProjectionSettings.dividendIncomeTaxRate = 0.40`
+   - Assert: year 1 `dividends ≈ 400` (net after WHT, before income tax)
+   - Assert: year 1 `dividendIncomeTax ≈ 160`
+   - Assert: year 1 `taxPaid ≈ 160`
+   - Assert: `dividendIncomeTax === 0` when rate is omitted from settings
+
+   **Test 11 – Global CGT rate applies when per-asset rate is null:**
+   - Asset with `cgtTaxRate: null`, `priceAppreciationPct: 0.05`
+   - `ProjectionSettings.cgtTaxRate = 0.33`
+   - Assert: year 5 `unrealisedCgt > 0` (global rate applied)
+   - Assert: year 5 `taxPaid === 0` (CGT is informational, not in taxPaid)
+   - Assert: asset with per-asset rate 0.20 has lower `unrealisedCgt` than asset using global rate 0.33
+
+   **Test 12 – Custom deemed disposal tax rate is applied:**
+   - 1 asset, 100 shares @ €100, 5% appreciation, deemed disposal enabled
+   - `ProjectionSettings.deemedDisposalTaxRate = 0.30`
+   - Assert: year 8 `deemedDisposalTax ≈ gain × 0.30`
+   - Assert: lower than default 41% rate
+
+   **Test 13 – DRIP creates new shares reflected in totalWealth:**
+   - 1 asset, 100 shares @ €100, 4% dividend yield, 0% appreciation, `dripEnabled: true`, no WHT/income tax
+   - Year 1: grossDividend = 400, takeHome = 400, dripShares = 4, totalShares = 104
+   - Assert: `rows[0].totalWealth ≈ 104 × 100 = 10,400`
+   - Assert: `rows[0].dividends ≈ 400` (income reporting unchanged)
+
+   **Test 14 – Cash dividends accumulate in totalWealth:**
+   - Same asset but `dripEnabled: false`
+   - Year 1: takeHome = 400 → cashBalance = 400, totalWealth = 10,000 + 400 = 10,400
+   - Year 2: takeHome = 400 → cashBalance = 800, totalWealth = 10,000 + 800 = 10,800
+   - Assert: `rows[0].totalWealth ≈ 10,400`
+   - Assert: `rows[1].totalWealth ≈ 10,800`
+
 4. Run tests with `npm run test` and confirm all pass.
 
 **Acceptance criteria:**
-- All 9 tests pass
-- Tests run in < 2 seconds
+- All 14 tests pass
+- Tests run in < 5 seconds
 - `npm run test` exits with code 0

@@ -178,103 +178,46 @@
 
 ---
 
-## Task 4.3 – Dividend Reinvestment Toggle
+## Task 4.3 – Dividend Reinvestment (DRIP) Toggle ✅ DONE (Frontend)
 
-**What:** Add an option per asset to automatically reinvest net dividends into additional shares, compounding into subsequent years.
+**Status:** Fully implemented in the frontend (Phase 1 POC). Backend still pending.
 
-**Steps:**
+**What was implemented:**
 
-1. **Backend changes:**
+The `dripEnabled: boolean` field was added to the `Asset` type. The `AssetFormDialog` includes a "Reinvest dividends (DRIP)" toggle in the Advanced section. The projection engine implements the full DRIP/cash model:
 
-   a) Add field to `Asset` entity:
+- **DRIP on:** take-home dividend (after WHT and income tax) buys a new `ShareLot` each year at the current share price. The lot compounds naturally and participates in future deemed disposal cycles.
+- **DRIP off:** take-home dividend accumulates in a running `cashBalance` that is added to `totalWealth` each year.
+
+Both paths report the same `dividends` value (income is income regardless of where it goes).
+
+**Remaining backend work:**
+
+1. Add `DripEnabled bool` to the C# `Asset` entity and all DTOs.
+2. Create EF migration: `dotnet ef migrations add AddDripEnabled`.
+3. Port DRIP/cash logic into `ProjectionService`:
    ```csharp
-   public bool ReinvestDividends { get; set; }
+   decimal cashBalance = 0m;  // persists across the year loop
+
+   // Per asset per year, after dividend calculation:
+   if (asset.DripEnabled && takeHome > 0)
+     simState.Lots.Add(new ShareLot { Shares = takeHome / simState.SharePrice, CostBase = simState.SharePrice, PurchaseYear = y })
+   else
+     cashBalance += takeHome;
+
+   // After asset loop:
+   var totalWealth = portfolioWealth + cashBalance;
    ```
+4. Update `ProjectionRequestDto` to include `DividendIncomeTaxRate?` and `DeemedDisposalTaxRate?`.
 
-   b) Add to `AssetConfiguration`:
-   ```csharp
-   builder.Property(a => a.ReinvestDividends).HasDefaultValue(false);
-   ```
+**Frontend tests (already passing):**
+- Test 13: DRIP creates 4 new shares, totalWealth ≈ 10,400
+- Test 14: Cash dividends accumulate — year 1 = 10,400, year 2 = 10,800
 
-   c) Add to all DTOs (`AssetDto`, `CreateAssetDto`, `UpdateAssetDto`):
-   ```csharp
-   bool ReinvestDividends
-   ```
-
-   d) Update `DtoMapper` to include the new field.
-
-   e) Create EF migration:
-   ```bash
-   dotnet ef migrations add AddReinvestDividends -p WealthAccSim.Infrastructure -s WealthAccSim.Api
-   ```
-
-2. **Projection engine changes (both C# and TypeScript):**
-
-   In the year loop, after computing `netDividend` for an asset, if `ReinvestDividends` is true:
-   ```
-   if asset.reinvestDividends:
-     reinvestedShares = netDividend / simState.sharePrice
-     // Add as a new lot with current year and current price as cost base
-     simState.lots.push({
-       shares: reinvestedShares,
-       costBase: simState.sharePrice,
-       purchaseYear: y
-     })
-   ```
-
-   **Important interactions:**
-   - Reinvested dividend lots are subject to deemed disposal on their own 8-year cycle (just like annual contribution lots).
-   - The net dividend reported in `YearRow` remains the same — reinvestment doesn't change the dividend amount, it just redirects where it goes.
-   - The reinvested shares increase portfolio value in subsequent years.
-   - If both `reinvestDividends` and `annualContribution` are active, both create separate lots in the same year. The contribution lot and the reinvestment lot are independent.
-
-3. **Frontend changes:**
-
-   a) Add to `src/types/api.ts`:
-   ```typescript
-   // In AssetDto, CreateAssetDto, UpdateAssetDto:
-   reinvestDividends: boolean
-   ```
-
-   b) Add to `AssetFormDialog.vue` in the "Advanced" section:
-   ```vue
-   <v-switch
-     v-model="form.reinvestDividends"
-     label="Reinvest dividends (DRIP)"
-     color="primary"
-     hide-details
-   />
-   ```
-
-   c) Add to `AssetTable.vue` as a column:
-   | DRIP | `reinvestDividends` | `v-chip` Yes/No |
-
-   d) Update the TypeScript projection engine in `projectionEngine.ts` with the same logic.
-
-4. **Test updates:**
-
-   **Backend — new unit test (Test 11):**
-   - 1 asset, 100 shares @ €100, 0% appreciation, 3% yield, reinvestDividends: true
-   - 3 years
-   - Assert: year 1 totalWealth > 10,000 (reinvested shares add value)
-   - Assert: year 2 dividends > year 1 dividends (more shares earning)
-   - Assert: total share count increases each year
-
-   **Backend — new unit test (Test 12):**
-   - 1 asset, 100 shares @ €100, 5% appreciation, 3% yield, reinvestDividends: true, deemedDisposal: enabled
-   - 10 years
-   - Assert: reinvested dividend lots from years 1 and 2 trigger deemed disposal at years 9 and 10 respectively
-   - Assert: deemed disposal tax at year 9 > 0
-
-   **Frontend — update matching TypeScript tests with same cases.**
-
-**Acceptance criteria:**
-- Toggle appears in asset form under "Advanced"
-- Reinvested dividends create new lots that compound
-- Reinvestment lots are subject to deemed disposal independently
-- Projection results reflect increased wealth from reinvested dividends
-- Both C# and TypeScript engines produce matching results
-- Migration applies cleanly to existing databases (default false, non-breaking)
+**Acceptance criteria (pending backend):**
+- Backend `DripEnabled` field persists and round-trips through API
+- C# engine produces identical results to TypeScript engine for DRIP and non-DRIP scenarios
+- Migration applies cleanly (default `false`, non-breaking)
 
 ---
 
@@ -608,6 +551,8 @@
 ---
 
 ## Task 4.8 – GitHub Actions CD Pipeline
+
+**Note:** The **frontend POC** (Phase 1 static app) is already deployed to GitHub Pages at `https://robertobubalo.github.io/investments-calculator/` via `.github/workflows/deploy.yml`. This was done as an interim step to make the projection engine accessible before the backend exists. The full Azure deployment below is planned for when the backend (Phase 2–3) is complete.
 
 **What:** Add deployment steps that run only on pushes to `main` after CI passes.
 
@@ -1022,26 +967,32 @@
 
    Run through each item and mark complete:
 
+   **Frontend POC (Phase 1 — already complete):**
+   - [x] `npm run dev` → Frontend starts
+   - [x] Add asset with all fields → appears in table
+   - [x] Edit asset → changes reflected
+   - [x] Delete asset → removed from table
+   - [x] Run projection (20 years, 2.5% inflation) → table + chart render
+   - [x] Deemed disposal tax appears at correct 8-year intervals
+   - [x] Annual contribution lots trigger deemed disposal independently
+   - [x] Expandable row shows per-lot breakdown (asset, lot purchase year, gain, tax, shares sold)
+   - [x] Dividend reinvestment (DRIP) increases wealth; cash dividends accumulate in totalWealth
+   - [x] Global CGT rate, per-asset CGT override, dividend income tax, configurable deemed disposal rate
+   - [x] `npm run test` → all 14 tests pass
+   - [x] GitHub Actions deploy → frontend live at https://robertobubalo.github.io/investments-calculator/
+
+   **Backend + full integration (Phase 2–4 — pending):**
    - [ ] `docker compose up -d` → PostgreSQL starts
    - [ ] `dotnet run` → API starts, Swagger loads
-   - [ ] `npm run dev` → Frontend starts
    - [ ] Register new account → success
    - [ ] Create portfolio → appears in list
-   - [ ] Add asset with all fields → appears in table
-   - [ ] Edit asset → changes reflected
-   - [ ] Delete asset → removed from table
-   - [ ] Run projection (20 years, 2.5% inflation) → table + chart render
-   - [ ] Deemed disposal tax appears at correct 8-year intervals
-   - [ ] Annual contribution lots trigger deemed disposal independently
-   - [ ] Expandable row shows per-lot breakdown (asset, lot purchase year, gain, tax, shares sold)
-   - [ ] Dividend reinvestment increases wealth over time
+   - [ ] Run projection via backend API (20 years, 2.5% inflation) → table + chart render
    - [ ] Nominal/real toggle switches table and chart values
    - [ ] Export CSV → file downloads with correct data
    - [ ] Logout → redirected to login, protected routes inaccessible
    - [ ] Login → data persisted from previous session
    - [ ] Second user → cannot see first user's data
    - [ ] `dotnet test` → all pass
-   - [ ] `npm run test` → all pass
    - [ ] `npm run lint` → no errors
    - [ ] `npm run type-check` → no errors
    - [ ] GitHub Actions CI → green on main

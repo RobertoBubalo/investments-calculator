@@ -177,9 +177,10 @@
      dividendYield: number
      priceAppreciationPct: number | null
      dividendGrowthPct: number | null
-     cgtTaxRate: number | null
+     cgtTaxRate: number | null          // per-asset CGT rate; null = use global fallback
      withholdingTaxRate: number | null
      deemedDisposalEnabled: boolean
+     dripEnabled: boolean               // true = reinvest dividends; false = accumulate as cash
      annualContribution: number
    }
 
@@ -195,6 +196,7 @@
      cgtTaxRate: number | null
      withholdingTaxRate: number | null
      deemedDisposalEnabled: boolean
+     dripEnabled: boolean
      annualContribution: number
    }
 
@@ -203,6 +205,9 @@
    export interface ProjectionRequestDto {
      years: number
      inflationRate: number
+     cgtTaxRate?: number                // global fallback CGT rate
+     dividendIncomeTaxRate?: number     // personal income tax on dividends
+     deemedDisposalTaxRate?: number     // exit tax rate; defaults to 0.41
    }
 
    export interface DeemedDisposalEventDto {
@@ -216,11 +221,13 @@
 
    export interface YearRowDto {
      year: number
-     totalWealth: number
+     totalWealth: number                // portfolioWealth + cashBalance
      wealthDelta: number
      dividends: number
      dividendsDelta: number
-     taxPaid: number
+     taxPaid: number                    // WHT + deemed disposal + income tax (CGT excluded)
+     unrealisedCgt: number              // paper CGT liability — informational only
+     dividendIncomeTax: number
      deemedDisposalTax: number
      deemedDisposalEvents: DeemedDisposalEventDto[]
      accumWealth: number

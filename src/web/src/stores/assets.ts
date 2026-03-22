@@ -1,9 +1,24 @@
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 import type { Asset } from '@/types'
 
+const STORAGE_KEY = 'was-assets'
+
+function loadAssets(): Asset[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    return raw ? (JSON.parse(raw) as Asset[]) : []
+  } catch {
+    return []
+  }
+}
+
 export const useAssetStore = defineStore('assets', () => {
-  const assets = ref<Asset[]>([])
+  const assets = ref<Asset[]>(loadAssets())
+
+  watch(assets, (val) => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(val))
+  }, { deep: true })
 
   function addAsset(asset: Omit<Asset, 'id'>) {
     assets.value.push({ ...asset, id: crypto.randomUUID() })
@@ -18,7 +33,7 @@ export const useAssetStore = defineStore('assets', () => {
     assets.value = assets.value.filter((a) => a.id !== id)
   }
 
-  // Seed with example data in dev
+  // Seed with example data on first visit (DEV only, when nothing is stored)
   if (import.meta.env.DEV && assets.value.length === 0) {
     addAsset({
       name: 'Vanguard FTSE All-World',

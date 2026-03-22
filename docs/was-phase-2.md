@@ -141,6 +141,7 @@
        public decimal? CgtTaxRate { get; set; }
        public decimal? WithholdingTaxRate { get; set; }
        public bool DeemedDisposalEnabled { get; set; }
+       public bool DripEnabled { get; set; }   // true = reinvest dividends as shares; false = accumulate as cash
        public decimal AnnualContribution { get; set; }
        public DateTime CreatedAt { get; set; }
        public DateTime UpdatedAt { get; set; }
@@ -166,7 +167,7 @@
        decimal DividendYield,
        decimal? PriceAppreciationPct, decimal? DividendGrowthPct,
        decimal? CgtTaxRate, decimal? WithholdingTaxRate,
-       bool DeemedDisposalEnabled, decimal AnnualContribution
+       bool DeemedDisposalEnabled, bool DripEnabled, decimal AnnualContribution
    );
 
    public record CreateAssetDto(
@@ -174,7 +175,7 @@
        decimal CurrentSharePrice, decimal DividendYield,
        decimal? PriceAppreciationPct, decimal? DividendGrowthPct,
        decimal? CgtTaxRate, decimal? WithholdingTaxRate,
-       bool DeemedDisposalEnabled, decimal AnnualContribution
+       bool DeemedDisposalEnabled, bool DripEnabled, decimal AnnualContribution
    );
 
    public record UpdateAssetDto(
@@ -182,13 +183,19 @@
        decimal CurrentSharePrice, decimal DividendYield,
        decimal? PriceAppreciationPct, decimal? DividendGrowthPct,
        decimal? CgtTaxRate, decimal? WithholdingTaxRate,
-       bool DeemedDisposalEnabled, decimal AnnualContribution
+       bool DeemedDisposalEnabled, bool DripEnabled, decimal AnnualContribution
    );
    ```
 
    **ProjectionDto.cs:**
    ```csharp
-   public record ProjectionRequestDto(int Years, decimal InflationRate);
+   public record ProjectionRequestDto(
+       int Years,
+       decimal InflationRate,
+       decimal? CgtTaxRate,              // global fallback CGT rate (applied when per-asset rate is null)
+       decimal? DividendIncomeTaxRate,   // personal income tax on net dividends
+       decimal? DeemedDisposalTaxRate    // exit tax rate; defaults to 0.41 if omitted
+   );
 
    public record DeemedDisposalEventDto(
        string AssetName, string AssetSymbol,
@@ -199,7 +206,10 @@
    public record YearRowDto(
        int Year, decimal TotalWealth, decimal WealthDelta,
        decimal Dividends, decimal DividendsDelta,
-       decimal TaxPaid, decimal DeemedDisposalTax,
+       decimal TaxPaid,                  // WHT + deemed disposal + income tax (CGT excluded)
+       decimal UnrealisedCgt,            // paper CGT liability — informational, not in TaxPaid
+       decimal DividendIncomeTax,
+       decimal DeemedDisposalTax,
        List<DeemedDisposalEventDto> DeemedDisposalEvents,
        decimal AccumWealth, decimal AccumDividends, decimal AccumTaxPaid,
        decimal RealWealth, decimal RealAccumDividends
@@ -292,12 +302,21 @@
    b) **Year loop (1 → settings.Years):** For each asset sim state:
       - Price appreciation
       - Annual contribution → new lot
-      - Deemed disposal: iterate all lots, check `(y - lot.PurchaseYear) > 0 && (y - lot.PurchaseYear) % 8 == 0`, tax = `gain × 0.41`, sell shares to cover, reset cost base
-      - Compute total shares, portfolio value, dividends (with yield growth), withholding tax, CGT (unrealised)
+      - Deemed disposal: iterate all lots, check `(y - lot.PurchaseYear) > 0 && (y - lot.PurchaseYear) % 8 == 0`, rate = `settings.DeemedDisposalTaxRate ?? 0.41m`, tax = `gain × rate`, sell shares to cover, reset cost base
+      - Dividends on shares **before** any DRIP lot: gross → WHT → net → income tax → takeHome
+      - DRIP: if `asset.DripEnabled && takeHome > 0` → push new lot; else `cashBalance += takeHome`
+      - CGT informational: `effectiveCgtRate = asset.CgtTaxRate ?? settings.CgtTaxRate ?? 0m`; sum lotGain × rate
+      - Portfolio value = totalShares × sharePrice (includes DRIP lot)
 
    c) **Deemed disposal events:** During the disposal loop, for each lot that triggers with `gain > 0`, create a `DeemedDisposalEventDto` capturing `AssetName`, `AssetSymbol`, `LotPurchaseYear`, `Gain`, `TaxAmount`, `SharesReduced`. Collect into a `List<DeemedDisposalEventDto>` per year.
 
-   d) **Aggregate across assets:** totalWealth, dividends, taxPaid, deemedDisposalTax, deemedDisposalEvents (combined list), deltas, accumulations, inflation adjustment.
+   d) **Aggregate across assets:**
+      - `portfolioWealth` = Σ portfolio values; `totalWealth` = `portfolioWealth + cashBalance` (cashBalance persists)
+      - `dividends` = Σ net dividends (after WHT)
+      - `taxPaid` = Σ (whTax + deemedTax + incomeTax) — **CGT excluded**
+      - `unrealisedCgt` = Σ cgtTax — informational only, never in taxPaid or accumTaxPaid
+      - `dividendIncomeTax` = Σ assetIncomeTax
+      - deltas, accumulations, inflation adjustment
 
 6. **Edge cases (same as Phase 1):**
    - Nullable fields → treat as 0 using `?? 0m`
@@ -696,7 +715,7 @@
            a.DividendYield,
            a.PriceAppreciationPct, a.DividendGrowthPct,
            a.CgtTaxRate, a.WithholdingTaxRate,
-           a.DeemedDisposalEnabled, a.AnnualContribution);
+           a.DeemedDisposalEnabled, a.DripEnabled, a.AnnualContribution);
    ```
 
 **Acceptance criteria:**
@@ -730,7 +749,7 @@
 2. **POST `/api/portfolios/{portfolioId}/projections`:**
    - Verify portfolio ownership — return `404` if not found
    - Accept `ProjectionRequestDto` body
-   - Validate: `Years` between 1 and 50, `InflationRate` between 0 and 1
+   - Validate: `Years` between 1 and 50, `InflationRate` between 0 and 1, optional rate fields between 0 and 1
    - Fetch assets via `_assetRepo.GetByPortfolioIdAsync(portfolioId)`
    - If no assets, return `200` with `ProjectionResultDto(Rows: [])` (empty projection is valid)
    - Call `_projectionService.Run(assets, settings)`
@@ -830,7 +849,7 @@
 
 1. Create `WealthAccSim.Tests/ProjectionServiceTests.cs`.
 
-2. Port all 8 test cases from Phase 1 Task 1.12, adapted for C# and `decimal`:
+2. Port all 14 test cases from Phase 1 Task 1.12, adapted for C# and `decimal`:
 
    **Test 1 – Basic growth, no extras:**
    - 1 asset, 100 shares @ €100, 5% appreciation, 0% dividend, no tax, no deemed disposal, no contribution
@@ -873,16 +892,17 @@
 
 3. **Additional C#-specific tests:**
 
-   **Test 9 – Cross-validation with TypeScript engine:**
+   **Test 15 – Cross-validation with TypeScript engine:**
    - Use the exact test scenario from Phase 1 Task 1.11 (VWCE, 100 shares, all params)
    - Hardcode the expected values from the TypeScript engine output for years 1, 8, 9, 16, 20
    - Assert the C# engine matches within `0.01m` tolerance
 
-   **Test 10 – Multiple assets aggregation:**
+   **Test 16 – Multiple assets aggregation:**
    - 2 assets with different parameters
-   - Assert: `TotalWealth` = sum of both assets' portfolio values
+   - Assert: `TotalWealth` includes portfolio value + accumulated cash from non-DRIP assets
    - Assert: `Dividends` = sum of both assets' net dividends
-   - Assert: `TaxPaid` = sum of all tax components from both assets
+   - Assert: `TaxPaid` = WHT + deemed disposal + income tax (no CGT)
+   - Assert: `UnrealisedCgt` = sum of informational CGT from both assets
 
 4. Use `FluentAssertions` for readable assertions:
    ```csharp
@@ -891,7 +911,7 @@
    ```
 
 **Acceptance criteria:**
-- All 10 tests pass
+- All 16 tests pass
 - `dotnet test` exits with code 0
 - Tests run in < 5 seconds
 
