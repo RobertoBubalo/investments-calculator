@@ -25,9 +25,10 @@ export function runProjection(assets: Asset[], settings: ProjectionSettings): Ye
   let prevDividends = 0
   let accumDividends = 0
   let accumTaxPaid = 0
+  let cashBalance = 0 // accumulated take-home dividends from non-DRIP assets
 
   for (let y = 1; y <= settings.years; y++) {
-    let totalWealth = 0
+    let portfolioWealth = 0
     let dividends = 0
     let taxPaid = 0
     let unrealisedCgt = 0
@@ -77,17 +78,23 @@ export function runProjection(assets: Asset[], settings: ProjectionSettings): Ye
         }
       }
 
-      // d) Totals for this asset
-      const totalShares = sim.lots.reduce((sum, lot) => sum + lot.shares, 0)
-      const portfolioValue = totalShares * sim.sharePrice
-
-      // Dividend growth
+      // d) Dividends — based on shares held before any DRIP reinvestment
+      const totalSharesForDiv = sim.lots.reduce((sum, lot) => sum + lot.shares, 0)
       sim.dividendYield *= 1 + (asset.dividendGrowthPct ?? 0)
-      const grossDividend = totalShares * sim.sharePrice * sim.dividendYield
+      const grossDividend = totalSharesForDiv * sim.sharePrice * sim.dividendYield
       const whTax = grossDividend * (asset.withholdingTaxRate ?? 0)
       const netDividend = grossDividend - whTax
+      const assetIncomeTax = netDividend * (settings.dividendIncomeTaxRate ?? 0)
+      const takeHome = netDividend - assetIncomeTax
 
-      // CGT (unrealised, informational) — per-asset rate takes precedence over global fallback
+      // e) DRIP or cash accumulation
+      if (asset.dripEnabled && takeHome > 0) {
+        sim.lots.push({ shares: takeHome / sim.sharePrice, costBase: sim.sharePrice, purchaseYear: y })
+      } else {
+        cashBalance += takeHome
+      }
+
+      // f) CGT (unrealised, informational) — uses all lots including any DRIP lot just added
       const effectiveCgtRate = asset.cgtTaxRate ?? (settings.cgtTaxRate ?? 0)
       let cgtTax = 0
       for (const lot of sim.lots) {
@@ -97,16 +104,19 @@ export function runProjection(assets: Asset[], settings: ProjectionSettings): Ye
         }
       }
 
-      // Dividend income tax — personal marginal rate applied to net dividend (after withholding)
-      const assetIncomeTax = netDividend * (settings.dividendIncomeTaxRate ?? 0)
+      // g) Portfolio value — uses all lots including any DRIP lot
+      const totalShares = sim.lots.reduce((sum, lot) => sum + lot.shares, 0)
+      const portfolioValue = totalShares * sim.sharePrice
 
-      totalWealth += portfolioValue
+      portfolioWealth += portfolioValue
       dividends += netDividend
       taxPaid += whTax + assetDeemedTax + assetIncomeTax
       unrealisedCgt += cgtTax
       dividendIncomeTax += assetIncomeTax
       deemedDisposalTax += assetDeemedTax
     }
+
+    const totalWealth = portfolioWealth + cashBalance
 
     accumDividends += dividends
     accumTaxPaid += taxPaid

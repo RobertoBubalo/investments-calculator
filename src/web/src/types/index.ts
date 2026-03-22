@@ -11,6 +11,7 @@ export interface Asset {
   cgtTaxRate: number | null
   withholdingTaxRate: number | null
   deemedDisposalEnabled: boolean
+  dripEnabled: boolean // true = reinvest dividends as shares; false = accumulate as cash
   annualContribution: number
 }
 

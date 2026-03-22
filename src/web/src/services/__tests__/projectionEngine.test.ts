@@ -16,6 +16,7 @@ function makeAsset(overrides: Partial<Asset> = {}): Asset {
     cgtTaxRate: null,
     withholdingTaxRate: null,
     deemedDisposalEnabled: false,
+    dripEnabled: false,
     annualContribution: 0,
     ...overrides,
   }
@@ -151,9 +152,9 @@ describe('Test 7 – Null optional fields', () => {
     // All optional fields are already null in makeAsset defaults
     const rows = runProjection([asset], { years: 5, inflationRate: 0 })
     expect(rows).toHaveLength(5)
-    // Price flat → wealth stays constant
+    // Price flat → portfolio stays at 10,000; totalWealth grows by 200 cash dividends per year
     for (const row of rows) {
-      expect(row.totalWealth).toBeCloseTo(100 * 100, 2)
+      expect(row.totalWealth).toBeCloseTo(10000 + row.year * 200, 2)
     }
   })
 })
@@ -269,5 +270,36 @@ describe('Test 12 – Custom deemed disposal tax rate is applied', () => {
 
   it('custom rate (0.30) produces less tax than default rate (0.41)', () => {
     expect(gain * 0.30).toBeLessThan(gain * 0.41)
+  })
+})
+
+// ── Test 13 ───────────────────────────────────────────────────────────────────
+describe('Test 13 – DRIP creates new shares reflected in totalWealth', () => {
+  const asset = makeAsset({ shares: 100, currentSharePrice: 100, dividendYield: 0.04, dripEnabled: true })
+  const rows = runProjection([asset], defaultSettings)
+
+  it('year 1 totalWealth = 104 × 100 = 10,400 (DRIP adds 4 shares)', () => {
+    // grossDividend = 100 × 100 × 0.04 = 400, no WHT/income tax, takeHome = 400
+    // dripShares = 400 / 100 = 4, totalShares = 104
+    expect(rows[0].totalWealth).toBeCloseTo(104 * 100, 2)
+  })
+
+  it('year 1 dividends still reported as 400 (income reporting unchanged)', () => {
+    expect(rows[0].dividends).toBeCloseTo(400, 2)
+  })
+})
+
+// ── Test 14 ───────────────────────────────────────────────────────────────────
+describe('Test 14 – Cash dividends accumulate in totalWealth', () => {
+  const asset = makeAsset({ shares: 100, currentSharePrice: 100, dividendYield: 0.04, dripEnabled: false })
+  const rows = runProjection([asset], defaultSettings)
+
+  it('year 1 totalWealth = 10,000 portfolio + 400 cash = 10,400', () => {
+    expect(rows[0].totalWealth).toBeCloseTo(10400, 2)
+  })
+
+  it('year 2 totalWealth = 10,000 portfolio + 800 cash = 10,800', () => {
+    // price flat, no appreciation → portfolio stays at 10,000; cash adds another 400
+    expect(rows[1].totalWealth).toBeCloseTo(10800, 2)
   })
 })

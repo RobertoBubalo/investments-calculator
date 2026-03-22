@@ -25,6 +25,7 @@ const form = ref<{
   cgtTaxRate: string
   withholdingTaxRate: string
   deemedDisposalEnabled: boolean
+  dripEnabled: boolean
   annualContribution: string
 }>({
   name: '',
@@ -38,6 +39,7 @@ const form = ref<{
   cgtTaxRate: '',
   withholdingTaxRate: '',
   deemedDisposalEnabled: false,
+  dripEnabled: false,
   annualContribution: '0',
 })
 
@@ -68,6 +70,7 @@ function resetForm() {
       cgtTaxRate: toDisplay(props.asset.cgtTaxRate) ?? '',
       withholdingTaxRate: toDisplay(props.asset.withholdingTaxRate) ?? '',
       deemedDisposalEnabled: props.asset.deemedDisposalEnabled,
+      dripEnabled: props.asset.dripEnabled,
       annualContribution: props.asset.annualContribution.toString(),
     }
   } else {
@@ -83,6 +86,7 @@ function resetForm() {
       cgtTaxRate: '',
       withholdingTaxRate: '',
       deemedDisposalEnabled: false,
+      dripEnabled: false,
       annualContribution: '0',
     }
   }
@@ -108,6 +112,7 @@ async function onSave() {
     cgtTaxRate: toDecimal(form.value.cgtTaxRate),
     withholdingTaxRate: toDecimal(form.value.withholdingTaxRate),
     deemedDisposalEnabled: form.value.deemedDisposalEnabled,
+    dripEnabled: form.value.dripEnabled,
     annualContribution: parseFloat(form.value.annualContribution) || 0,
   })
   emit('update:modelValue', false)
@@ -275,6 +280,15 @@ const positiveRequired = (v: string) => {
                       v-model="form.deemedDisposalEnabled"
                       label="Irish 8-year deemed disposal"
                       color="warning"
+                      density="compact"
+                      hide-details
+                    />
+                  </v-col>
+                  <v-col cols="12" sm="6" class="d-flex align-center">
+                    <v-switch
+                      v-model="form.dripEnabled"
+                      label="Reinvest dividends (DRIP)"
+                      color="success"
                       density="compact"
                       hide-details
                     />

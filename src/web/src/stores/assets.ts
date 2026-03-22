@@ -32,6 +32,7 @@ export const useAssetStore = defineStore('assets', () => {
       cgtTaxRate: 0.33,
       withholdingTaxRate: 0.15,
       deemedDisposalEnabled: true,
+      dripEnabled: true,
       annualContribution: 1200,
     })
     addAsset({
@@ -46,6 +47,7 @@ export const useAssetStore = defineStore('assets', () => {
       cgtTaxRate: 0.33,
       withholdingTaxRate: 0.15,
       deemedDisposalEnabled: true,
+      dripEnabled: true,
       annualContribution: 600,
     })
   }
