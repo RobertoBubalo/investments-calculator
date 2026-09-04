@@ -12,7 +12,7 @@ export function runProjection(assets: Asset[], settings: ProjectionSettings): Ye
     assetId: asset.id,
     lots: [{ shares: asset.shares, costBase: asset.buyPrice, purchaseYear: 0 }],
     sharePrice: asset.currentSharePrice,
-    dividendYield: asset.dividendYield,
+    dividendPerShare: asset.currentSharePrice * asset.dividendYield,
   }))
 
   const deemedDisposalRate = settings.deemedDisposalTaxRate ?? 0.41
@@ -80,8 +80,8 @@ export function runProjection(assets: Asset[], settings: ProjectionSettings): Ye
 
       // d) Dividends — based on shares held before any DRIP reinvestment
       const totalSharesForDiv = sim.lots.reduce((sum, lot) => sum + lot.shares, 0)
-      sim.dividendYield *= 1 + (asset.dividendGrowthPct ?? 0)
-      const grossDividend = totalSharesForDiv * sim.sharePrice * sim.dividendYield
+      sim.dividendPerShare *= 1 + (asset.dividendGrowthPct ?? 0)
+      const grossDividend = totalSharesForDiv * sim.dividendPerShare
       const whTax = grossDividend * (asset.withholdingTaxRate ?? 0)
       const netDividend = grossDividend - whTax
       const assetIncomeTax = netDividend * (settings.dividendIncomeTaxRate ?? 0)

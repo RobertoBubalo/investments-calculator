@@ -33,7 +33,7 @@ export interface AssetSimState {
   assetId: string
   lots: ShareLot[]
   sharePrice: number
-  dividendYield: number
+  dividendPerShare: number // grows only by dividendGrowthPct, never by price appreciation
 }
 
 export interface DeemedDisposalEvent {

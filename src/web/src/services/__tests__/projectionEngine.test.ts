@@ -303,3 +303,58 @@ describe('Test 14 – Cash dividends accumulate in totalWealth', () => {
     expect(rows[1].totalWealth).toBeCloseTo(10800, 2)
   })
 })
+
+
+// ── Test 15 ───────────────────────────────────────────────────────────────────
+describe('Test 15 – Dividend growth compounds only at dividendGrowthPct, not at price appreciation rate', () => {
+  // 100 shares @ €100, yield 2.99%, 10% dividend growth, 7% price appreciation, no DRIP, no taxes
+  // dividendPerShare_0 = 100 × 0.0299 = 2.99
+  // Year 1: dividendPerShare = 2.99 × 1.10 = 3.289 → grossDividend = 100 × 3.289 = 328.90
+  // Year 2: dividendPerShare = 2.99 × 1.21 = 3.6179 → grossDividend = 100 × 3.6179 = 361.79
+  // Buggy behaviour (double-compounding) would give Year 1 = 100 × 107 × 0.03289 = 351.93
+  const asset = makeAsset({
+    shares: 100,
+    currentSharePrice: 100,
+    dividendYield: 0.0299,
+    dividendGrowthPct: 0.10,
+    priceAppreciationPct: 0.07,
+    dripEnabled: false,
+  })
+  const rows = runProjection([asset], { years: 3, inflationRate: 0 })
+
+  it('year 1 dividend = shares × initialDividendPerShare × (1 + dividendGrowthPct)', () => {
+    const expected = 100 * (100 * 0.0299) * 1.10
+    expect(rows[0].dividends).toBeCloseTo(expected, 2)
+  })
+
+  it('year 2 / year 1 ratio equals exactly dividendGrowthPct (1.10), not 1.10 × 1.07', () => {
+    expect(rows[1].dividends / rows[0].dividends).toBeCloseTo(1.10, 5)
+  })
+
+  it('year 3 / year 1 ratio equals (1.10)^2, confirming no price compounding', () => {
+    expect(rows[2].dividends / rows[0].dividends).toBeCloseTo(Math.pow(1.10, 2), 5)
+  })
+})
+
+// ── Test 16 ───────────────────────────────────────────────────────────────────
+describe('Test 16 – Dividend growth with no price appreciation grows at dividendGrowthPct only', () => {
+  const asset = makeAsset({
+    shares: 100,
+    currentSharePrice: 100,
+    dividendYield: 0.05,
+    dividendGrowthPct: 0.08,
+    priceAppreciationPct: null,
+    dripEnabled: false,
+  })
+  const rows = runProjection([asset], { years: 4, inflationRate: 0 })
+
+  it('year 1 dividend = 100 × 100 × 0.05 × 1.08', () => {
+    expect(rows[0].dividends).toBeCloseTo(100 * 100 * 0.05 * 1.08, 2)
+  })
+
+  it('every consecutive year grows by exactly 1.08', () => {
+    for (let i = 1; i < rows.length; i++) {
+      expect(rows[i].dividends / rows[i - 1].dividends).toBeCloseTo(1.08, 5)
+    }
+  })
+})
